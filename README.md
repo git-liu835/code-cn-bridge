@@ -8,7 +8,7 @@
 
 ### 方式一：桌面安装包（推荐）
 
-从 [Releases]() 页面下载对应平台的安装包安装，双击启动即可：
+从 [Releases](https://github.com/git-liu835/code-cn-bridge/releases) 页面下载对应平台的安装包安装，双击启动即可：
 
 | 平台 | 安装包 |
 |------|--------|
@@ -30,7 +30,7 @@ export OPENAI_API_KEY="any-value"
 
 ```bash
 # 1. 克隆
-git clone https://github.com/你的用户名/code-cn-bridge.git
+git clone https://github.com/git-liu835/code-cn-bridge.git
 cd code-cn-bridge
 
 # 2. 安装 Python 依赖
