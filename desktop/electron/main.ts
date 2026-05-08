@@ -1,0 +1,375 @@
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, dialog, shell } from 'electron';
+import { spawn, execSync, ChildProcess } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let bridgeProcess: ChildProcess | null = null;
+let isQuitting = false;
+let bridgeRestartCount = 0;
+const MAX_RESTART = 5;
+
+const BRIDGE_PORT = 8765;
+const isDev = !app.isPackaged;
+
+function findConfigPath(): string | null {
+  // 优先找项目根目录的 config.yaml（适合开发模式）
+  const projectConfig = path.join(__dirname, '..', '..', 'config.yaml');
+  if (fs.existsSync(projectConfig)) return projectConfig;
+  // 其次找用户主目录的配置
+  const homeConfig = path.join(app.getPath('home'), '.code-cn-bridge.yaml');
+  if (fs.existsSync(homeConfig)) return homeConfig;
+  return null;
+}
+
+function getBridgeCommand(): { cmd: string; args: string[] } {
+  const configPath = findConfigPath();
+  const configArgs: string[] = configPath ? ['-c', configPath] : [];
+
+  if (isDev) {
+    return {
+      cmd: 'python',
+      args: ['-m', 'code_cn_bridge.cli', 'start', '--port', String(BRIDGE_PORT), ...configArgs],
+    };
+  }
+  // 生产模式：使用 PyInstaller 打包的可执行文件
+  const exeName = process.platform === 'win32' ? 'code-cn-bridge.exe' : 'code-cn-bridge';
+  const exePath = path.join(process.resourcesPath, 'backend', exeName);
+  if (fs.existsSync(exePath)) {
+    return { cmd: exePath, args: ['start', '--port', String(BRIDGE_PORT), ...configArgs] };
+  }
+  // 回退到 python 模块
+  return {
+    cmd: 'python',
+    args: ['-m', 'code_cn_bridge.cli', 'start', '--port', String(BRIDGE_PORT), ...configArgs],
+  };
+}
+
+function startBridgeProcess() {
+  if (bridgeProcess) return;
+
+  // 强制释放端口（解决上次进程残留导致的端口占用循环）
+  try {
+    if (process.platform === 'win32') {
+      const psScript = `
+        $conns = Get-NetTCPConnection -LocalPort ${BRIDGE_PORT} -EA SilentlyContinue |
+          Where-Object { $_.OwningProcess -gt 0 }
+        foreach ($c in $conns) {
+          Stop-Process -Id $c.OwningProcess -Force -EA SilentlyContinue
+        }
+      `;
+      execSync(`powershell -NoProfile -Command "${psScript.replace(/\n/g, ' ')}"`, { timeout: 5000 });
+    } else {
+      execSync(`lsof -ti:${BRIDGE_PORT} | xargs kill -9 2>/dev/null; true`, { timeout: 5000 });
+    }
+  } catch { /* ignore */ }
+
+  const { cmd, args } = getBridgeCommand();
+  console.log(`[Main] Starting bridge: ${cmd} ${args.join(' ')}`);
+
+  bridgeProcess = spawn(cmd, args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+  });
+
+  bridgeProcess.stdout?.on('data', (data: Buffer) => {
+    const text = data.toString();
+    console.log(`[Bridge] ${text.trim()}`);
+    mainWindow?.webContents.send('bridge-log', { level: 'info', text: text.trim() });
+  });
+
+  bridgeProcess.stderr?.on('data', (data: Buffer) => {
+    const text = data.toString();
+    console.error(`[Bridge Error] ${text.trim()}`);
+    mainWindow?.webContents.send('bridge-log', { level: 'error', text: text.trim() });
+  });
+
+  bridgeProcess.on('close', (code: number | null) => {
+    console.log(`[Main] Bridge process exited with code ${code}`);
+    bridgeProcess = null;
+    mainWindow?.webContents.send('bridge-status', { running: false });
+
+    // 自动重启（非用户主动退出，最多重试 MAX_RESTART 次）
+    if (!isQuitting && code !== 0 && bridgeRestartCount < MAX_RESTART) {
+      bridgeRestartCount++;
+      console.log(`[Main] Auto-restarting bridge in 3s (attempt ${bridgeRestartCount}/${MAX_RESTART})...`);
+      setTimeout(startBridgeProcess, 3000);
+    } else if (bridgeRestartCount >= MAX_RESTART) {
+      console.error(`[Main] Bridge failed after ${MAX_RESTART} retries, giving up.`);
+    }
+  });
+
+  bridgeProcess.on('error', (err: Error) => {
+    console.error('[Main] Failed to start bridge:', err.message);
+    bridgeProcess = null;
+  });
+
+  // 成功运行后重置计数
+  setTimeout(() => { bridgeRestartCount = 0; }, 5000);
+  mainWindow?.webContents.send('bridge-status', { running: true });
+}
+
+function stopBridgeProcess() {
+  if (!bridgeProcess) return;
+
+  // 尝试优雅关闭
+  try {
+    const http = require('http');
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: BRIDGE_PORT,
+      path: '/admin/api/shutdown',
+      method: 'POST',
+      timeout: 3000,
+    });
+    req.on('error', () => {});
+    req.end();
+  } catch {
+    // ignore
+  }
+
+  setTimeout(() => {
+    if (bridgeProcess) {
+      bridgeProcess.kill('SIGTERM');
+      bridgeProcess = null;
+    }
+  }, 1500);
+}
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1100,
+    height: 720,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'code CN Bridge',
+    icon: nativeImage.createEmpty(),
+    backgroundColor: '#0f1117',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+    show: false,
+    frame: true,
+    titleBarStyle: 'default',
+  });
+
+  // 窗口准备好后显示
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+  });
+
+  // 关闭窗口 → 根据设置决定隐藏到托盘或退出
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && getCloseToTraySetting()) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+
+  if (isDev) {
+    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+function createTray() {
+  // 创建 16x16 托盘图标
+  const icon = nativeImage.createEmpty();
+  tray = new Tray(icon);
+
+  // 使用自定义标题
+  if (process.platform === 'darwin') {
+    tray.setTitle('CN');
+  }
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示主窗口',
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        } else {
+          createWindow();
+        }
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '停止代理',
+      click: () => {
+        stopBridgeProcess();
+      },
+    },
+    {
+      label: '启动代理',
+      click: () => {
+        startBridgeProcess();
+      },
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        isQuitting = true;
+        stopBridgeProcess();
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+  tray.setToolTip('code CN Bridge');
+
+  tray.on('double-click', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    } else {
+      createWindow();
+    }
+  });
+}
+
+// ── IPC Handlers ────────────────────────────────────────────────────
+
+ipcMain.handle('get-bridge-status', async () => {
+  try {
+    const http = require('http');
+    return new Promise((resolve) => {
+      const req = http.get(`http://127.0.0.1:${BRIDGE_PORT}/admin/api/status`, (res: any) => {
+        let body = '';
+        res.on('data', (chunk: string) => { body += chunk; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch { resolve({ running: false }); }
+        });
+      });
+      req.on('error', () => resolve({ running: false }));
+      req.setTimeout(3000, () => { req.destroy(); resolve({ running: false }); });
+    });
+  } catch {
+    return { running: false };
+  }
+});
+
+ipcMain.handle('export-config', async () => {
+  if (!mainWindow) return { yaml: '' };
+  try {
+    return await mainWindow.webContents.executeJavaScript(
+      `fetch('http://127.0.0.1:${BRIDGE_PORT}/admin/api/config/export').then(r => r.json())`
+    );
+  } catch {
+    return { yaml: '' };
+  }
+});
+
+ipcMain.handle('import-config', async (_event, yamlStr: string) => {
+  try {
+    const http = require('http');
+    const data = JSON.stringify({ yaml: yamlStr });
+    return new Promise((resolve) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: BRIDGE_PORT,
+        path: '/admin/api/config/import', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': data.length },
+      }, (res: any) => {
+        let body = '';
+        res.on('data', (chunk: string) => { body += chunk; });
+        res.on('end', () => resolve(JSON.parse(body)));
+      });
+      req.on('error', () => resolve({ error: '连接失败' }));
+      req.write(data);
+      req.end();
+    });
+  } catch {
+    return { error: '导入失败' };
+  }
+});
+
+ipcMain.handle('select-file', async (_event, options: { filters?: Array<{ name: string; extensions: string[] }> }) => {
+  const result = await dialog.showOpenDialog(mainWindow!, {
+    properties: ['openFile'],
+    filters: options.filters || [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('save-file', async (_event, options: { defaultPath?: string; content: string }) => {
+  const result = await dialog.showSaveDialog(mainWindow!, {
+    defaultPath: options.defaultPath || 'config.yaml',
+    filters: [{ name: 'YAML', extensions: ['yaml', 'yml'] }],
+  });
+  if (!result.canceled && result.filePath) {
+    fs.writeFileSync(result.filePath, options.content, 'utf-8');
+    return result.filePath;
+  }
+  return null;
+});
+
+ipcMain.handle('open-external', async (_event, url: string) => {
+  await shell.openExternal(url);
+});
+
+// ── App Lifecycle ────────────────────────────────────────────────────
+
+function getCloseToTraySetting(): boolean {
+  const configPath = findConfigPath();
+  if (!configPath) return true;
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const match = content.match(/^\s*close_to_tray:\s*(true|false)\s*$/m);
+    if (match) return match[1] === 'true';
+  } catch { /* ignore */ }
+  return true;
+}
+
+function getAutoStartSetting(): boolean {
+  const configPath = findConfigPath();
+  if (!configPath) return true;
+  try {
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const match = content.match(/^\s*auto_start:\s*(true|false)\s*$/m);
+    if (match) return match[1] === 'true';
+  } catch { /* ignore */ }
+  return true;
+}
+
+app.whenReady().then(() => {
+  createTray();
+  createWindow();
+  if (getAutoStartSetting()) {
+    startBridgeProcess();
+  } else {
+    console.log('[Main] auto_start disabled, bridge not started automatically');
+  }
+});
+
+app.on('window-all-closed', () => {
+  // 不退出，保持托盘运行
+});
+
+app.on('activate', () => {
+  if (mainWindow) {
+    mainWindow.show();
+  } else {
+    createWindow();
+  }
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
+  stopBridgeProcess();
+});
+
+app.on('quit', () => {
+  stopBridgeProcess();
+});

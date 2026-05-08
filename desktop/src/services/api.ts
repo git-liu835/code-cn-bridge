@@ -1,0 +1,65 @@
+import type { ProxyStatus, ModelConfig, ServerSettings, RequestLogEntry, TestResult } from '../types';
+
+const BASE = 'http://localhost:8765';
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export const api = {
+  // 状态
+  getStatus: () => request<ProxyStatus>('/admin/api/status'),
+
+  // 模型 CRUD
+  getModels: () => request<{ models: ModelConfig[] }>('/admin/api/models'),
+  addModel: (data: Record<string, unknown>) =>
+    request<{ status: string }>('/admin/api/models', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateModel: (alias: string, data: Record<string, unknown>) =>
+    request<{ status: string }>(`/admin/api/models/${encodeURIComponent(alias)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteModel: (alias: string) =>
+    request<{ status: string }>(`/admin/api/models/${encodeURIComponent(alias)}`, {
+      method: 'DELETE',
+    }),
+  testConnection: (alias: string, data?: Record<string, unknown>) =>
+    request<TestResult>(`/admin/api/models/${encodeURIComponent(alias)}/test`, {
+      method: 'POST',
+      body: JSON.stringify(data || {}),
+    }),
+
+  // 设置
+  getSettings: () => request<ServerSettings>('/admin/api/settings'),
+  updateSettings: (data: Record<string, unknown>) =>
+    request<{ status: string; message: string }>('/admin/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  // 日志
+  getLogs: (limit = 100) => request<{ logs: RequestLogEntry[] }>(`/admin/api/logs?limit=${limit}`),
+  clearLogs: () => request<{ status: string }>('/admin/api/logs/clear', { method: 'POST' }),
+
+  // 配置导入导出
+  exportConfig: () => request<{ yaml: string; config_path: string }>('/admin/api/config/export'),
+  importConfig: (yaml: string) =>
+    request<{ status: string; error?: string }>('/admin/api/config/import', {
+      method: 'POST',
+      body: JSON.stringify({ yaml }),
+    }),
+
+  // 关闭
+  shutdown: () => request<{ status: string }>('/admin/api/shutdown', { method: 'POST' }),
+};

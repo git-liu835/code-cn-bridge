@@ -1,0 +1,50 @@
+# API keys & secrets
+.env
+*.env
+!example.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Bridge logs
+bridge.log
+bridge.log.*
+
+# Desktop app
+desktop/dist/
+desktop/dist-electron/
+desktop/node_modules/
+desktop/out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated images
+generated_image_*.png
+
+# Build output
+dist-backend/
+build/pyinstaller/
+desktop/release/
+
+# PyInstaller
+*.spec
+debug.log
+desktop/$null

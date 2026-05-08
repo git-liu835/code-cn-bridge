@@ -1,0 +1,39 @@
+appId: com.code-cn-bridge.app
+productName: code CN Bridge
+copyright: MIT
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+
+extraResources:
+  - from: ../dist-backend/
+    to: backend/
+
+mac:
+  target:
+    - dmg
+  icon: assets/icon.icns
+
+linux:
+  target:
+    - AppImage
+    - deb
+  icon: assets/icon.png
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: code CN Bridge
+
+win:
+  target:
+    - nsis
+    - portable
+  icon: assets/icon.ico
+  signAndEditExecutable: false

@@ -1,0 +1,84 @@
+# code CN Bridge 默认配置文件
+# 详细配置请通过桌面应用或 CLI 管理
+
+server:
+  host: 127.0.0.1
+  port: 8765
+  auto_start: true
+  close_to_tray: true
+  log_level: info
+  audit_log_path: ""
+
+providers:
+  deepseek:
+    adapter: deepseek
+    base_url: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    enabled: false
+    extra_headers: {}
+    max_retries: 0
+    timeout: 120
+    tool_calls_enabled: true
+  doubao:
+    adapter: doubao
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    api_key_env: ARK_API_KEY
+    enabled: false
+    extra_headers: {}
+    max_retries: 0
+    timeout: 120
+    tool_calls_enabled: true
+  kimi:
+    adapter: kimi
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: KIMI_API_KEY
+    enabled: false
+    extra_headers: {}
+    max_retries: 0
+    timeout: 120
+    tool_calls_enabled: true
+  qwen:
+    adapter: qwen
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: QWEN_API_KEY
+    enabled: false
+    extra_headers: {}
+    max_retries: 0
+    timeout: 120
+    tool_calls_enabled: true
+  zhipu:
+    adapter: zhipu
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    enabled: false
+    extra_headers: {}
+    max_retries: 0
+    timeout: 120
+    tool_calls_enabled: true
+
+model_mapping:
+  gpt-5-code:
+    enabled: false
+    image_gen_alias: null
+    is_image_gen: false
+    is_multimodal: false
+    is_video_gen: false
+    provider: deepseek
+    target: deepseek-v4-pro
+    video_gen_alias: null
+    vision_alias: null
+  gpt-5-code-light:
+    enabled: false
+    image_gen_alias: null
+    is_image_gen: false
+    is_multimodal: false
+    is_video_gen: false
+    provider: deepseek
+    target: deepseek-v4-pro
+    video_gen_alias: null
+    vision_alias: null
+
+vision_routing:
+  enabled: true
+  model: doubao-seed-1-8-251228
+  provider: doubao
