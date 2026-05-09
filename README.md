@@ -1,6 +1,6 @@
 # code CN Bridge
 
-本地代理工具，将 OpenAI Responses API 翻译为 Chat Completions API，使 code CLI 无缝接入通义千问、DeepSeek、Kimi 等国产大模型。
+本地代理工具，将 OpenAI Responses API 翻译为 Chat Completions API，使 codex CLI, 桌面端,  Vs Code插件无缝接入通义千问、DeepSeek、Kimi 等国产大模型。编程的功能都可以用,有问题可以进群交流,大家可以相互交流, QQ群:1095150579,也欢迎大家给出建议。
 
 **v2.0** 新增原生桌面管理界面（Electron + React），无需编辑 YAML 或打开浏览器。
 
@@ -128,42 +128,3 @@ code-cn-bridge list-adapters # 列出适配器
 | POST | `/config/import` | 导入配置 |
 | POST | `/shutdown` | 安全关闭 |
 
-## 架构
-
-```
-┌──────────────────────────────────────────────┐
-│                   Electron 主进程             │
-│  ┌───────────────────┐  ┌─────────────────┐  │
-│  │  管理子进程        │  │ 系统托盘/窗口   │  │
-│  │  (FastAPI 代理)    │  │                 │  │
-│  └────────┬──────────┘  └─────────────────┘  │
-│           │                                   │
-│           ▼                                   │
-│  ┌────────────────────┐                      │
-│  │  React 前端 (UI)    │                      │
-│  └────────────────────┘                      │
-└──────────────────────────────────────────────┘
-       │
-       │ HTTP (localhost:8765)
-       ▼
-┌─────────────┐       HTTPS       ┌──────────────┐
-│  code CLI   │ ────────────────▶ │  国产模型 API │
-└─────────────┘                   └──────────────┘
-```
-
-## 构建发布包
-
-```bash
-# 一键构建所有平台的安装包
-# Windows:
-scripts\build-all.bat
-
-# macOS / Linux:
-bash scripts/build-all.sh
-```
-
-构建流程：PyInstaller 打包 Python 后端 → vite 打包 React 前端 → electron-builder 生成安装包
-
-## License
-
-MIT
