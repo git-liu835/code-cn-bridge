@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -427,7 +428,9 @@ def create_app(verbose: bool = False) -> FastAPI:
         if verbose:
             logger.debug("请求模型: %s → %s/%s", model, provider_name, target_model)
 
-        client = UpstreamClient(adapter, api_key)
+        # 从 provider 配置读取超时设置
+        provider_timeout = get_config().get_provider(provider_name).get("timeout", 120) if provider_name else 120
+        client = UpstreamClient(adapter, api_key, timeout=provider_timeout, stream_timeout=max(provider_timeout, 600))
 
         try:
             # 1. 协议转换: Responses → Chat
@@ -516,7 +519,8 @@ def create_app(verbose: bool = False) -> FastAPI:
         body["model"] = target_model
         body = adapter.preprocess_chat_request(body)
 
-        client = UpstreamClient(adapter, api_key)
+        provider_timeout = get_config().get_provider(provider_name).get("timeout", 120) if provider_name else 120
+        client = UpstreamClient(adapter, api_key, timeout=provider_timeout, stream_timeout=max(provider_timeout, 600))
         try:
             if stream:
                 async def _sse_gen():
@@ -667,9 +671,19 @@ async def _handle_stream(
     """处理流式请求: 上游 Chat SSE → 适配器变换 → 协议转换 → Responses SSE"""
     translator = StreamTranslator(model=model)
     stream_error = ""
+    chat_stream = client.chat_completion_stream(chat_req)
 
     try:
-        async for chunk in client.chat_completion_stream(chat_req):
+        while True:
+            try:
+                # 15 秒超时：上游长时间推理时发送心跳保持连接
+                chunk = await asyncio.wait_for(anext(chat_stream), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
             # 适配器流事件变换
             chunk = adapter.stream_event_transform(chunk)
 
@@ -684,11 +698,14 @@ async def _handle_stream(
         stream_error = str(exc)
         logger.exception("流式处理异常")
 
-    # 无论成功或失败，必须发送 response.completed
-    for event_line in translator._finish():
-        yield event_line
+    # 仅在流正常结束时发送 response.completed（异常时连接可能已断开）
+    if not stream_error:
+        try:
+            for event_line in translator._finish():
+                yield event_line
+        except Exception:
+            pass  # 客户端已断开连接
 
-    # 如果是异常，再发一个 error 事件
     if stream_error:
         _record_request(start_time, model, "responses", 500, True, stream_error, provider=provider, target_model=target_model)
     else:
