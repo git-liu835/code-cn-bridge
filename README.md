@@ -128,3 +128,11 @@ code-cn-bridge list-adapters # 列出适配器
 | POST | `/config/import` | 导入配置 |
 | POST | `/shutdown` | 安全关闭 |
 
+效果展示：
+<img width="1596" height="1003" alt="image" src="https://github.com/user-attachments/assets/b33e67b2-b04e-48b6-a715-a5e939015238" />
+配置步骤；
+<img width="1354" height="879" alt="image" src="https://github.com/user-attachments/assets/99c4e5a0-6442-4f9c-a7eb-48e87fc7b03c" />
+监控日志：
+<img width="1356" height="894" alt="image" src="https://github.com/user-attachments/assets/d8846936-badb-4f7f-a703-95a66e0745e3" />
+
+
