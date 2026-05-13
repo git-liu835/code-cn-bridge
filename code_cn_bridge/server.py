@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -107,13 +108,15 @@ def _resolve_adapter(provider_name: str, target_model: str) -> tuple[BaseAdapter
 
 
 def _has_images(input_items: list[dict]) -> bool:
-    """检测 input 数组是否包含图片"""
+    """检测 input 数组是否包含图片（检查 message content 和 function_call_output 的 output）"""
     for item in input_items:
-        content = item.get("content", "")
-        if isinstance(content, list):
-            for part in content:
-                if part.get("type") in ("input_image", "image_url"):
-                    return True
+        # content 字段（message 类型）以及 output 字段（function_call_output 类型）
+        for field in ("content", "output"):
+            content = item.get(field, "")
+            if isinstance(content, list):
+                for part in content:
+                    if part.get("type") in ("input_image", "image_url"):
+                        return True
     return False
 
 
@@ -323,19 +326,37 @@ def _route_vision(model: str, body: dict) -> tuple[BaseAdapter, str, str, str]:
             ventry = cfg.model_mapping[vision_alias]
             v_target = ventry.get("target", vision_alias)
             v_provider = ventry.get("provider", "") or ventry.get("target", "")
-            logger.info("检测到图片输入，切换到视觉模型: %s/%s (来自 %s)", v_provider, v_target, vision_alias)
-            return _resolve_adapter(v_provider, v_target)
+            try:
+                logger.info("检测到图片输入，切换到视觉模型: %s/%s (来自 %s)", v_provider, v_target, vision_alias)
+                return _resolve_adapter(v_provider, v_target)
+            except ValueError as exc:
+                logger.warning("视觉模型 %s/%s 不可用: %s，回退到默认路由", v_provider, v_target, exc)
 
     # 2. 回退到全局视觉路由
     vr = cfg.vision_routing
     if vr.get("enabled"):
         vision_provider = vr.get("provider", "doubao")
         vision_model = vr.get("model", "doubao-vision-pro-32k")
-        logger.info("检测到图片输入，使用全局视觉路由: %s/%s", vision_provider, vision_model)
-        return _resolve_adapter(vision_provider, vision_model)
+        try:
+            logger.info("检测到图片输入，使用全局视觉路由: %s/%s", vision_provider, vision_model)
+            return _resolve_adapter(vision_provider, vision_model)
+        except ValueError as exc:
+            logger.warning("全局视觉路由 %s/%s 不可用: %s，回退到文本模型（图片将被忽略）",
+                vision_provider, vision_model, exc)
 
-    # 3. 无图片或没有视觉路由，使用原始模型
+    # 3. 视觉路由不可用，回退到文本模型：剥离图片内容防止上游 400
+    logger.warning("视觉路由未配置或不可用，使用文本模型 %s 处理请求（图片已移除）", model)
+    _strip_images_from_input(input_items)
     return _get_adapter_for_model(model)
+
+
+def _strip_images_from_input(input_items: list[dict]) -> None:
+    """从 input 数组中移除所有图片内容，防止文本模型报 400"""
+    for item in input_items:
+        for field in ("content", "output"):
+            content = item.get(field)
+            if isinstance(content, list):
+                item[field] = [p for p in content if p.get("type") not in ("input_image", "image_url")]
 
 
 # ── 应用工厂 ───────────────────────────────────────────────────────
@@ -427,7 +448,9 @@ def create_app(verbose: bool = False) -> FastAPI:
         if verbose:
             logger.debug("请求模型: %s → %s/%s", model, provider_name, target_model)
 
-        client = UpstreamClient(adapter, api_key)
+        # 从 provider 配置读取超时设置
+        provider_timeout = get_config().get_provider(provider_name).get("timeout", 120) if provider_name else 120
+        client = UpstreamClient(adapter, api_key, timeout=provider_timeout, stream_timeout=max(provider_timeout, 600))
 
         try:
             # 1. 协议转换: Responses → Chat
@@ -516,7 +539,8 @@ def create_app(verbose: bool = False) -> FastAPI:
         body["model"] = target_model
         body = adapter.preprocess_chat_request(body)
 
-        client = UpstreamClient(adapter, api_key)
+        provider_timeout = get_config().get_provider(provider_name).get("timeout", 120) if provider_name else 120
+        client = UpstreamClient(adapter, api_key, timeout=provider_timeout, stream_timeout=max(provider_timeout, 600))
         try:
             if stream:
                 async def _sse_gen():
@@ -667,9 +691,19 @@ async def _handle_stream(
     """处理流式请求: 上游 Chat SSE → 适配器变换 → 协议转换 → Responses SSE"""
     translator = StreamTranslator(model=model)
     stream_error = ""
+    chat_stream = client.chat_completion_stream(chat_req)
 
     try:
-        async for chunk in client.chat_completion_stream(chat_req):
+        while True:
+            try:
+                # 15 秒超时：上游长时间推理时发送心跳保持连接
+                chunk = await asyncio.wait_for(anext(chat_stream), timeout=15.0)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
             # 适配器流事件变换
             chunk = adapter.stream_event_transform(chunk)
 
@@ -684,11 +718,14 @@ async def _handle_stream(
         stream_error = str(exc)
         logger.exception("流式处理异常")
 
-    # 无论成功或失败，必须发送 response.completed
-    for event_line in translator._finish():
-        yield event_line
+    # 仅在流正常结束时发送 response.completed（异常时连接可能已断开）
+    if not stream_error:
+        try:
+            for event_line in translator._finish():
+                yield event_line
+        except Exception:
+            pass  # 客户端已断开连接
 
-    # 如果是异常，再发一个 error 事件
     if stream_error:
         _record_request(start_time, model, "responses", 500, True, stream_error, provider=provider, target_model=target_model)
     else:

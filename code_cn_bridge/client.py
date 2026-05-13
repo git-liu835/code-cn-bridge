@@ -13,11 +13,13 @@ from .adapters.base import BaseAdapter
 class UpstreamClient:
     """上游模型 API 异步客户端"""
 
-    def __init__(self, adapter: BaseAdapter, api_key: str, timeout: float = 120.0):
+    def __init__(self, adapter: BaseAdapter, api_key: str, timeout: float = 120.0, stream_timeout: float = 600.0):
         self.adapter = adapter
         self.api_key = api_key
         self._client: httpx.AsyncClient | None = None
+        self._stream_client: httpx.AsyncClient | None = None
         self._timeout = timeout
+        self._stream_timeout = stream_timeout
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -27,10 +29,22 @@ class UpstreamClient:
             )
         return self._client
 
+    async def _get_stream_client(self) -> httpx.AsyncClient:
+        """流式请求专用客户端 —— 读超时更长，容忍模型长时间推理"""
+        if self._stream_client is None:
+            self._stream_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=30.0, read=self._stream_timeout, write=30.0, pool=30.0),
+                limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+            )
+        return self._stream_client
+
     async def close(self) -> None:
         if self._client:
             await self._client.aclose()
             self._client = None
+        if self._stream_client:
+            await self._stream_client.aclose()
+            self._stream_client = None
 
     async def chat_completion(self, chat_req: dict) -> dict:
         """发送非流式 Chat Completions 请求"""
@@ -50,7 +64,7 @@ class UpstreamClient:
 
     async def chat_completion_stream(self, chat_req: dict) -> AsyncIterator[dict]:
         """发送流式 Chat Completions 请求，返回 SSE 事件迭代器"""
-        client = await self._get_client()
+        client = await self._get_stream_client()
         url = self.adapter.build_chat_url()
         headers = self.adapter.get_headers(self.api_key)
         chat_req["stream"] = True

@@ -1,0 +1,82 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # ── 三平台并行构建 ──────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: windows
+          - os: macos-latest
+            artifact_name: macos
+          - os: ubuntu-latest
+            artifact_name: linux
+    runs-on: ${{ matrix.os }}
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python 后端
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Build Python backend (PyInstaller)
+        run: python scripts/build-backend.py
+
+      # Electron 前端
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Build Electron frontend
+        run: |
+          cd desktop
+          npm ci
+          npm run build
+
+      # 打包安装程序
+      - name: Package (electron-builder)
+        run: |
+          cd desktop
+          npx electron-builder --config electron-builder.yml --publish never
+
+      # 上传产物
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+            desktop/release/*.blockmap
+          if-no-files-found: ignore
+
+  # ── 创建 GitHub Release ─────────────────────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          path: artifacts
+          merge-multiple: true
+
+      - run: ls -la artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
