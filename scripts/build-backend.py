@@ -7,36 +7,27 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist-backend"
 
 
+def run(cmd: list[str]) -> None:
+    subprocess.check_call(cmd)
+
+
 def main():
     DIST.mkdir(exist_ok=True)
 
-    pip = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
+    pip = [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check"]
 
-    # 确保基础工具链
-    subprocess.check_call(pip + ["--upgrade", "pip", "setuptools", "wheel"])
-    subprocess.check_call(pip + ["pyinstaller"])
+    run(pip + ["pyinstaller"])
+    run(pip + ["-e", str(ROOT)])
 
-    # 安装本项目及其依赖
-    subprocess.check_call(pip + ["-e", str(ROOT)])
-
-    # 创建临时入口脚本
+    # 入口脚本
     entry_dir = ROOT / "build"
     entry_dir.mkdir(exist_ok=True)
     entry = entry_dir / "_entry.py"
     entry.write_text("from code_cn_bridge.cli import main; main()", encoding="utf-8")
 
-    # 收集 code_cn_bridge 包内所有子模块作为 hidden-import
-    package_dir = ROOT / "code_cn_bridge"
-    hidden_args = ["--hidden-import", "code_cn_bridge"]
-    for py_file in sorted(package_dir.rglob("*.py")):
-        if py_file.name == "__init__.py":
-            continue
-        rel = py_file.relative_to(ROOT)
-        mod = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
-        hidden_args.extend(["--hidden-import", mod])
-
-    # 隐式依赖
-    extra_imports = [
+    # 关键隐式依赖
+    hidden = [
+        "code_cn_bridge",
         "uvicorn.logging",
         "uvicorn.loops.auto",
         "uvicorn.protocols.http.auto",
@@ -48,11 +39,19 @@ def main():
         "watchfiles",
         "pydantic",
     ]
-    for imp in extra_imports:
-        hidden_args.extend(["--hidden-import", imp])
 
-    cmd = [
-        sys.executable, "-m", "PyInstaller",
+    # 追加 code_cn_bridge 子模块
+    for f in sorted(ROOT.glob("code_cn_bridge/**/*.py")):
+        if f.name == "__init__.py":
+            continue
+        rel = f.relative_to(ROOT)
+        mod = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
+        hidden.append(mod)
+
+    cmd = [sys.executable, "-m", "PyInstaller"]
+    for m in hidden:
+        cmd += ["--hidden-import", m]
+    cmd += [
         "--onefile",
         "--noconfirm",
         "--clean",
@@ -61,15 +60,13 @@ def main():
         "--workpath", str(entry_dir / "pyinstaller"),
         "--specpath", str(entry_dir),
         "--collect-all", "code_cn_bridge",
-        *hidden_args,
         str(entry),
     ]
 
-    subprocess.check_call(cmd)
+    run(cmd)
 
     ext = ".exe" if sys.platform == "win32" else ""
-    output = DIST / f"code-cn-bridge{ext}"
-    print(f"\nBackend built → {output}")
+    print(f"\nBackend built -> {DIST / f'code-cn-bridge{ext}'}")
 
 
 if __name__ == "__main__":
