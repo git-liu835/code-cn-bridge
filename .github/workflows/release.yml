@@ -6,7 +6,6 @@ on:
       - 'v*'
 
 jobs:
-  # ── 三平台并行构建 ──────────────────────────────────────────────
   build:
     strategy:
       fail-fast: false
@@ -18,6 +17,7 @@ jobs:
             artifact_name: macos
           - os: ubuntu-latest
             artifact_name: linux
+
     runs-on: ${{ matrix.os }}
 
     env:
@@ -26,30 +26,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Python 后端
+      # ── Linux 系统依赖 ──────────────────────────────────────────
+      - name: Install Linux system deps (for AppImage & deb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfuse2 \
+            dpkg-dev \
+            fakeroot
+
+      # ── Python 后端 ─────────────────────────────────────────────
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Install Python dependencies
+        run: pip install -e .[dev] || pip install -e .
+
       - name: Build Python backend (PyInstaller)
         run: python scripts/build-backend.py
 
-      # Electron 前端
+      # ── Electron 前端 ────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
           node-version: 18
+
       - name: Build Electron frontend
         run: |
           cd desktop
           npm ci
           npm run build
 
-      # 打包安装程序
+      # ── 打包 ────────────────────────────────────────────────────
       - name: Package (electron-builder)
         run: |
           cd desktop
           npx electron-builder --config electron-builder.yml --publish never
 
-      # 上传产物
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
@@ -61,7 +75,6 @@ jobs:
             desktop/release/*.blockmap
           if-no-files-found: ignore
 
-  # ── 创建 GitHub Release ─────────────────────────────────────────
   release:
     needs: build
     runs-on: ubuntu-latest
