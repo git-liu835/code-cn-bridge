@@ -1,0 +1,91 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build & Run
+
+```bash
+# Install Python backend (editable mode)
+pip install -e .
+
+# Start the proxy server
+code-cn-bridge start          # production
+code-cn-bridge start -v       # debug mode (verbose logging)
+
+# Desktop app (dev mode)
+cd desktop && npm install && npm run electron:dev
+
+# Build only
+cd desktop && npm run build          # Vite + Electron TypeScript
+python scripts/build-backend.py      # PyInstaller → dist-backend/code-cn-bridge.exe
+
+# Full pipeline (Windows)
+scripts/build-all.bat
+
+# Docker
+docker build -t code-cn-bridge . && docker run -p 8765:8765 code-cn-bridge
+```
+
+There are **no tests** in this project.
+
+## Architecture
+
+The proxy sits between Claude Code CLI and Chinese LLM APIs, translating the OpenAI **Responses API** (used by Claude Code) to the OpenAI **Chat Completions API** (offered by Qwen, DeepSeek, Kimi, Doubao, GLM).
+
+```
+Claude Code CLI ──POST /v1/responses──> 127.0.0.1:8765 (FastAPI)
+  │
+  ├── _route_vision()  — detects images, routes to vision-capable model
+  ├── translate_request()  — Responses → Chat (protocol.py)
+  ├── adapter.preprocess_chat_request()  — provider-specific normalization
+  ├── UpstreamClient → Chinese LLM API
+  ├── StreamTranslator  — SSE → SSE with reasoning_content filtering
+  └── translate_response()  — Chat → Responses (non-streaming)
+```
+
+### Key modules
+
+| Module | Role |
+|--------|------|
+| `server.py` | FastAPI app factory. Routes: `/v1/responses`, `/v1/chat/completions`, `/v1/images/generations`, `/health`. Also handles vision routing and image_gen tool interception. |
+| `protocol.py` | Bidirectional translation engine. `translate_request()` (Responses→Chat), `translate_response()` (Chat→Responses), `StreamTranslator` (stateful SSE stream converter). |
+| `adapters/` | 5 adapters (qwen, deepseek, kimi, doubao, glm) extending `BaseAdapter`. Each handles: field removal, SSE normalization, thinking mode suppression, tool_call extraction from XML/JSON in content. |
+| `config.py` | YAML config singleton. Search path: `~/.code-cn-bridge.yaml` → `./config.yaml`. Reads API keys from env vars. `resolve_model(code_name) → (provider, target_model)`. |
+| `client.py` | `UpstreamClient` — httpx async HTTP wrapper. Separate clients for streaming (read timeout 600s) vs non-streaming. |
+| `admin_api.py` | REST + WebSocket API mounted at `/admin/api` for the desktop UI: model CRUD, settings, logs, config import/export. |
+| `middleware.py` | `ErrorHandlingMiddleware`, `RequestLoggingMiddleware`, `ApiKeyFilter` (redacts keys from logs). |
+| `stats.py` | Thread-safe `StatsCollector` singleton with rolling 500-entry log buffer and WebSocket push. |
+
+### Desktop app (Electron + React)
+
+- **Main process** (`electron/main.ts`): window management, system tray, spawns Python bridge as child process (auto-restart up to 5 times, 3s delay).
+- **Renderer** (`src/`): 5 pages (Dashboard, Models, Settings, Logs, About), 6 themes, i18n (zh/en). Communicates with backend via REST + WebSocket on `localhost:8765/admin/api`.
+
+### Config singleton pattern
+
+`config.py` uses a global `_config_instance`. All modules call `get_config()` instead of passing config around. Hot reload is supported via `POST /admin/reload-config`.
+
+### Model mapping
+
+`config.yaml → model_mapping` maps code model names to provider + target model. Each entry:
+```yaml
+gpt-5-code:
+  provider: deepseek
+  target: deepseek-v4-pro
+  enabled: true
+  is_multimodal: false      # set true if model handles images natively
+  vision_alias: null         # fallback vision model when images detected
+```
+
+The `resolve_model()` method falls back through: exact match → provider name match → first enabled provider with API key.
+
+## Critical gotchas
+
+- **reasoning_content filtering**: `StreamTranslator._process_chunk()` (protocol.py:401) explicitly filters `reasoning_content` from DeepSeek v4-pro to prevent Claude Code from entering reasoning loops. Only `content` deltas are forwarded.
+- **thinking mode must be disabled**: DeepSeek, Kimi, and GLM adapters force `thinking: {type: "disabled"}`. Without this, the model may loop indefinitely.
+- **image_gen interception**: When `image_gen` appears in tools, `server.py` handles it directly (calls image gen API → downloads → saves to CWD) instead of forwarding to the text LLM.
+- **vision routing**: `_has_images()` checks both `content` and `output` fields of input items. When images are detected but no vision model is configured, images are stripped before sending to text models (prevents upstream 400 errors).
+- **SSE heartbeat**: `_handle_stream()` sends `: heartbeat\n\n` every 15s during idle periods to keep connections alive through long model reasoning phases.
+- **Stream client timeouts**: Streaming uses `httpx.Timeout(connect=30, read=600, write=30, pool=30)`. Non-streaming uses a flat 120s timeout. Both are overridable per-provider via the `timeout` field in config.
+- **API key safety**: `ApiKeyFilter` redacts keys from logs. `config.save()` strips env-sourced API keys before writing YAML.
+- **⚠️ No git history safety net**: Always verify changes compile before making further edits. Use `python -m py_compile` for quick syntax checks.
