@@ -24,6 +24,8 @@ linux:
     - AppImage
     - deb
   icon: assets/icon.png
+  category: Utility
+  maintainer: git-liu835
 
 nsis:
   oneClick: false

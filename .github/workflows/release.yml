@@ -60,14 +60,9 @@ jobs:
       - name: Package (electron-builder)
         env:
           GH_TOKEN: ''
-          EP_GH_TOKEN: ''
         run: |
           cd desktop
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            npx electron-builder --config electron-builder.yml --linux AppImage --publish never 2>&1
-          else
-            npx electron-builder --config electron-builder.yml --publish never 2>&1
-          fi
+          npx electron-builder --config electron-builder.yml --publish never 2>&1
 
       - uses: actions/upload-artifact@v4
         with:
