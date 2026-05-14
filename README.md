@@ -15,6 +15,7 @@
 | Windows | `code-CN-Bridge-Setup-0.1.0.exe` |
 | macOS | `code-CN-Bridge-0.1.0.dmg` |
 | Linux | `code-CN-Bridge-0.1.0.AppImage` |
+<img width="1420" height="622" alt="a1970f0e890f194e2f7f687ca4bca784" src="https://github.com/user-attachments/assets/6af8fa21-76b1-4ae1-b04d-cecdc9150a73" />
 
 安装后：打开软件 → 配置模型和 API Key → 点击启动 → 完成。无需安装 Python 环境。
 
