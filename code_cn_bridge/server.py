@@ -410,6 +410,20 @@ def create_app(verbose: bool = False) -> FastAPI:
             "model_mapping": cfg.model_mapping,
         }
 
+    @app.get("/v1/models")
+    async def list_models():
+        cfg = get_config()
+        models = []
+        for alias, entry in cfg.model_mapping.items():
+            if entry.get("enabled", True):
+                models.append({
+                    "id": alias,
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": entry.get("provider", "code-cn-bridge"),
+                })
+        return {"object": "list", "data": models}
+
     @app.post("/admin/reload-config")
     async def admin_reload():
         reload_config()
